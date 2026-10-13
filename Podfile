@@ -1,4 +1,4 @@
-source 'https://github.com/CocoaPods/Specs.git'
+source 'https://cdn.cocoapods.org/'
 
 minVersion = '10.10'
 
@@ -40,6 +40,7 @@ target "org.eyebeam.selfcontrold" do
 end
 
 post_install do |pi|
+   load File.join(__dir__, "scripts/patch-legacy-pods.rb")
    pi.pods_project.targets.each do |t|
        t.build_configurations.each do |bc|
            if Gem::Version.new(bc.build_settings['MACOSX_DEPLOYMENT_TARGET']) < Gem::Version.new(minVersion)
@@ -48,4 +49,8 @@ post_install do |pi|
            end
        end
    end
+end
+
+post_integrate do |_installer|
+   load File.join(__dir__, "scripts/patch-legacy-pods.rb")
 end

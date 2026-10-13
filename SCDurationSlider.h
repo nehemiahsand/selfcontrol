@@ -11,7 +11,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface SCDurationSlider : NSSlider
 
-@property (nonatomic, assign) NSInteger maxDuration;
+@property (nonatomic, assign) NSInteger maxDuration; // minutes, including in day mode
+@property (nonatomic, assign) BOOL usesDays;
 @property (readonly) NSInteger durationValueMinutes;
 @property (readonly) NSString* durationDescription;
 

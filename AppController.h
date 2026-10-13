@@ -58,7 +58,7 @@
 @property (assign) BOOL addingBlock;
 
 // Called when the block duration slider is moved.  Updates the label that gives
-// the block duration in words (hours and minutes).
+// the block duration in words (days).
 - (IBAction)updateTimeSliderDisplay:(id)sender;
 
 /* // Gets authorization for and then immediately removes the block by calling

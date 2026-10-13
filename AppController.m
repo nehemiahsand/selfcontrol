@@ -62,6 +62,86 @@
 	return self;
 }
 
+- (void)configureModernWindow {
+    NSView *content = initialWindow_.contentView;
+    [NSLayoutConstraint deactivateConstraints:content.constraints];
+    for (NSView *view in content.subviews) {
+        [NSLayoutConstraint deactivateConstraints:view.constraints];
+        [view removeFromSuperview];
+    }
+    [initialWindow_ setContentSize:NSMakeSize(560, 430)];
+    initialWindow_.titlebarAppearsTransparent = YES;
+    initialWindow_.movableByWindowBackground = YES;
+    initialWindow_.backgroundColor = NSColor.windowBackgroundColor;
+
+    NSTextField *(^label)(NSString *, CGFloat, NSFontWeight) = ^(NSString *text, CGFloat size, NSFontWeight weight) {
+        NSTextField *field = [NSTextField labelWithString:text];
+        field.font = [NSFont systemFontOfSize:size weight:weight];
+        field.translatesAutoresizingMaskIntoConstraints = NO;
+        [content addSubview:field];
+        return field;
+    };
+    NSTextField *heading = label(@"Make room for focus.", 28, NSFontWeightSemibold);
+    NSTextField *subtitle = label(@"Choose your websites. Set your time. Commit.", 13, NSFontWeightRegular);
+    subtitle.textColor = NSColor.secondaryLabelColor;
+    NSTextField *caption = label(@"BLOCK DURATION", 11, NSFontWeightSemibold);
+    caption.textColor = NSColor.secondaryLabelColor;
+    NSTextField *minimum = label(@"1 day", 11, NSFontWeightRegular);
+    NSTextField *maximum = label(@"30 days", 11, NSFontWeightRegular);
+    minimum.textColor = maximum.textColor = NSColor.secondaryLabelColor;
+    NSTextField *footnote = label(@"Once started, the block stays on until time runs out.", 12, NSFontWeightRegular);
+    footnote.textColor = NSColor.secondaryLabelColor;
+    blockSliderTimeDisplayLabel_.font = [NSFont systemFontOfSize:42 weight:NSFontWeightMedium];
+    blockSliderTimeDisplayLabel_.alignment = NSTextAlignmentLeft;
+    blockSliderTimeDisplayLabel_.textColor = NSColor.labelColor;
+    blockDurationSlider_.toolTip = @"Select 1–30 days. Each step is one full day.";
+    blockDurationSlider_.accessibilityLabel = @"Block duration in days";
+    blocklistTeaserLabel_.font = [NSFont systemFontOfSize:13];
+    editBlocklistButton_.title = @"Edit websites";
+    submitButton_.title = @"Start block";
+    for (NSButton *button in @[editBlocklistButton_, submitButton_]) {
+        button.controlSize = NSControlSizeLarge;
+        button.font = [NSFont systemFontOfSize:14 weight:NSFontWeightMedium];
+        button.bezelStyle = NSBezelStyleRounded;
+    }
+    submitButton_.bezelColor = NSColor.controlAccentColor;
+    for (NSView *view in @[blockSliderTimeDisplayLabel_, blockDurationSlider_, blocklistTeaserLabel_, editBlocklistButton_, submitButton_]) {
+        view.translatesAutoresizingMaskIntoConstraints = NO;
+        [content addSubview:view];
+    }
+    [NSLayoutConstraint activateConstraints:@[
+        [heading.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:32],
+        [heading.topAnchor constraintEqualToAnchor:content.topAnchor constant:24],
+        [subtitle.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
+        [subtitle.topAnchor constraintEqualToAnchor:heading.bottomAnchor constant:8],
+        [caption.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
+        [caption.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:32],
+        [blockSliderTimeDisplayLabel_.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
+        [blockSliderTimeDisplayLabel_.topAnchor constraintEqualToAnchor:caption.bottomAnchor constant:6],
+        [blockSliderTimeDisplayLabel_.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-32],
+        [blockDurationSlider_.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
+        [blockDurationSlider_.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-32],
+        [blockDurationSlider_.topAnchor constraintEqualToAnchor:blockSliderTimeDisplayLabel_.bottomAnchor constant:12],
+        [minimum.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
+        [minimum.topAnchor constraintEqualToAnchor:blockDurationSlider_.bottomAnchor constant:4],
+        [maximum.trailingAnchor constraintEqualToAnchor:blockDurationSlider_.trailingAnchor],
+        [maximum.topAnchor constraintEqualToAnchor:minimum.topAnchor],
+        [blocklistTeaserLabel_.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
+        [blocklistTeaserLabel_.centerYAnchor constraintEqualToAnchor:editBlocklistButton_.centerYAnchor],
+        [blocklistTeaserLabel_.trailingAnchor constraintLessThanOrEqualToAnchor:editBlocklistButton_.leadingAnchor constant:-16],
+        [editBlocklistButton_.trailingAnchor constraintEqualToAnchor:blockDurationSlider_.trailingAnchor],
+        [editBlocklistButton_.topAnchor constraintEqualToAnchor:minimum.bottomAnchor constant:26],
+        [editBlocklistButton_.widthAnchor constraintEqualToConstant:140],
+        [submitButton_.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
+        [submitButton_.trailingAnchor constraintEqualToAnchor:blockDurationSlider_.trailingAnchor],
+        [submitButton_.topAnchor constraintEqualToAnchor:editBlocklistButton_.bottomAnchor constant:24],
+        [submitButton_.heightAnchor constraintEqualToConstant:40],
+        [footnote.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
+        [footnote.topAnchor constraintEqualToAnchor:submitButton_.bottomAnchor constant:12]
+    ]];
+    [initialWindow_ center];
+}
+
 - (IBAction)updateTimeSliderDisplay:(id)sender {
     NSInteger numMinutes = [defaults_ integerForKey: @"BlockDuration"];
 
@@ -411,7 +491,13 @@
 	blockIsOn = ![SCUIUtilities blockIsRunning];
 
 	// Change block duration slider for hidden user defaults settings
-    blockDurationSlider_.maxDuration = [defaults_ integerForKey: @"MaxBlockLength"];
+    // A dedicated UI range avoids silently reinterpreting old minute preferences.
+    [defaults_ setInteger:43200 forKey:@"MaxBlockLength"];
+    NSInteger savedMinutes = [defaults_ integerForKey:@"BlockDuration"];
+    [defaults_ setInteger:MIN(30, MAX(1, (NSInteger)ceil(savedMinutes / 1440.0))) * 1440 forKey:@"BlockDuration"];
+    blockDurationSlider_.usesDays = YES;
+    blockDurationSlider_.maxDuration = 43200;
+    [self configureModernWindow];
     [blockDurationSlider_ bindDurationToObject: [NSUserDefaultsController sharedUserDefaultsController]
                                        keyPath: @"values.BlockDuration"];
     
@@ -528,7 +614,7 @@
 }
 
 - (void)extendBlockTime:(NSInteger)minutesToAdd lock:(NSLock*)lock {
-    // sanity check: extending a block for 0 minutes is useless; 24 hour should be impossible
+    // Extensions use the same 1–30 day range as new blocks.
     NSInteger maxBlockLength = [defaults_ integerForKey: @"MaxBlockLength"];
     if(minutesToAdd < 1) return;
     if (minutesToAdd > maxBlockLength) {
@@ -698,7 +784,7 @@
 
     [self.xpc refreshConnectionAndRun:^{
         // Before we try to extend the block, make sure the block time didn't run out (or is about to run out) in the meantime
-        if ([SCBlockUtilities currentBlockIsExpired] || [oldBlockEndDate timeIntervalSinceNow] < 1) {
+        if ([SCBlockUtilities currentBlockRemainingSeconds] < 1) {
             // we're done, or will be by the time we get to it! so just let it expire. they can restart it.
             [lockToUse unlock];
             return;

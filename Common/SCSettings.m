@@ -20,7 +20,7 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
 
 // Private vars
 @property (readonly) NSMutableDictionary* settingsDict;
-@property NSDate* lastSynchronizedWithDisk;
+@property NSInteger lastSynchronizedVersion;
 @property dispatch_source_t syncTimer;
 @property dispatch_source_t debouncedChangeTimer;
 
@@ -45,6 +45,7 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
         _readOnly = (geteuid() != 0);
         
         _settingsDict = nil;
+        _lastSynchronizedVersion = -1;
         
         [[NSDistributedNotificationCenter defaultCenter] addObserver: self
                                                             selector: @selector(onSettingChanged:)
@@ -80,6 +81,9 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
 - (NSDictionary*)defaultSettingsDict {
     return @{
         @"BlockEndDate": [NSDate distantPast],
+        @"BlockUsesContinuousClock": @NO,
+        @"BlockClockState": @{},
+        @"ProtectionStatus": @{},
         @"ActiveBlocklist": @[],
         @"ActiveBlockAsWhitelist": @NO,
 
@@ -126,7 +130,7 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
             }
             
             // we're now current with disk!
-            self->lastSynchronizedWithDisk = [NSDate date];
+            self.lastSynchronizedVersion = [self->_settingsDict[@"SettingsVersionNumber"] integerValue];
 
             [self startSyncTimer];
         }
@@ -173,31 +177,13 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
         NSDate* diskSettingsLastUpdated = settingsFromDisk[@"LastSettingsUpdate"];
         NSDate* memorySettingsLastUpdated = [self valueForKey: @"LastSettingsUpdate"];
         
-        // occasionally we can end up with timestamps from the future
-        // (usually because the user moved their system clock forward, then back again)
-        // it's a weird edge case and we should just fix that when we see it
-        if ([diskSettingsLastUpdated timeIntervalSinceNow] > 0) {
-            // we'll pretend the disk was written 1 second ago in this case to avoid weird edge conditions
-            diskSettingsLastUpdated = [[NSDate date] dateByAddingTimeInterval: 1.0];
-        }
-        if ([memorySettingsLastUpdated timeIntervalSinceNow] > 0) {
-            memorySettingsLastUpdated = [NSDate date];
-            [self setValue: memorySettingsLastUpdated forKey: @"LastSettingsUpdate"];
-        }
-
-        if (diskSettingsLastUpdated == nil) diskSettingsLastUpdated = [NSDate distantPast];
-        
-        // try to decide which is more recent by version number, tiebreak by date
-        BOOL diskMoreRecentThanMemory = NO;
-        if (diskSettingsVersion == memorySettingsVersion) {
-            diskMoreRecentThanMemory = ([diskSettingsLastUpdated timeIntervalSinceDate: memorySettingsLastUpdated] > 0);
-        } else {
-            diskMoreRecentThanMemory = (diskSettingsVersion > memorySettingsVersion);
-        }
+        // Revision numbers, not the user-adjustable date, decide freshness.
+        // Equal revisions are the same state; a clock jump is not an update.
+        BOOL diskMoreRecentThanMemory = diskSettingsVersion > memorySettingsVersion;
 
         if (diskMoreRecentThanMemory) {
             _settingsDict = [settingsFromDisk mutableCopy];
-            self.lastSynchronizedWithDisk = [NSDate date];
+            self.lastSynchronizedVersion = [[self valueForKey:@"SettingsVersionNumber"] integerValue];
             NSLog(@"Newer SCSettings found on disk (version %d vs %d with time interval %f), updating...", diskSettingsVersion, memorySettingsVersion, [diskSettingsLastUpdated timeIntervalSinceDate: memorySettingsLastUpdated]);
             [SCSentry addBreadcrumb: @"Updated SCSettings to newer settings found on disk" category: @"settings"];
         }
@@ -279,7 +265,7 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
                                     error: &chmodErr];
 
             if (writeSuccessful) {
-                self.lastSynchronizedWithDisk = [NSDate date];
+                self.lastSynchronizedVersion = [[self valueForKey:@"SettingsVersionNumber"] integerValue];
             }
 
             if (!writeSuccessful) {
@@ -308,17 +294,9 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
 - (void)synchronizeSettingsWithCompletion:(nullable void (^)(NSError * _Nullable))completionBlock {
     [self reloadSettings];
     
-    NSDate* lastSettingsUpdate = [self valueForKey: @"LastSettingsUpdate"];
-    
-    // occasionally we can end up with timestamps from the future
-    // (usually because the user moved their system clock forward, then back again)
-    // it's a weird edge case and we should just fix that when we see it
-    if ([lastSettingsUpdate timeIntervalSinceNow] > 0) {
-        [self setValue: [NSDate date] forKey: @"LastSettingsUpdate"];
-    }
-    
-    if ([lastSettingsUpdate timeIntervalSinceDate: self.lastSynchronizedWithDisk] > 0 && !self.readOnly) {
-        NSLog(@" --> Writing settings to disk (haven't been written since %@)", self.lastSynchronizedWithDisk);
+    // A backwards clock adjustment must not suppress writes until the old
+    // wall-clock timestamp is reached again (including reboot checkpoints).
+    if ([[self valueForKey:@"SettingsVersionNumber"] integerValue] != self.lastSynchronizedVersion && !self.readOnly) {
         [self writeSettingsWithCompletion: completionBlock];
     } else {
         if(completionBlock != nil) {
@@ -475,6 +453,8 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
     [dictCopy setObject: @(blocklistLength) forKey: @"ActiveBlocklistLength"];
     [dictCopy removeObjectForKey: @"Blocklist"];
     [dictCopy removeObjectForKey: @"ActiveBlocklist"];
+    [dictCopy removeObjectForKey: @"BlockClockState"];
+    [dictCopy removeObjectForKey: @"ProtectionStatus"];
 
     // and serialize dates to string, since Sentry has a hard time with that
     NSArray<NSString*>* dateKeys = @[@"BlockEndDate", @"LastSettingsUpdate"];
@@ -512,13 +492,8 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
     int ourSettingsVersionNumber = [[self valueForKey: @"SettingsVersionNumber"] intValue];
     NSDate* ourSettingsLastUpdated = [self valueForKey: @"LastSettingsUpdate"];
 
-    // check by version number, tiebreak by last updated date
-    BOOL noteMoreRecentThanSettings = NO;
-    if (noteVersionNumber == ourSettingsVersionNumber) {
-        noteMoreRecentThanSettings = ([noteSettingUpdated timeIntervalSinceDate: ourSettingsLastUpdated] > 0);
-    } else {
-        noteMoreRecentThanSettings = (noteVersionNumber > ourSettingsVersionNumber);
-    }
+    // Clock changes must not make an old notification look newer.
+    BOOL noteMoreRecentThanSettings = (noteVersionNumber > ourSettingsVersionNumber);
 
     if (!noteMoreRecentThanSettings) {
         NSLog(@"Ignoring setting change notification as %@ is older than %@", noteSettingUpdated, ourSettingsLastUpdated);
@@ -563,6 +538,6 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
     [self cancelSyncTimers];
 }
 
-@synthesize settingsDict = _settingsDict, lastSynchronizedWithDisk;
+@synthesize settingsDict = _settingsDict;
 
 @end

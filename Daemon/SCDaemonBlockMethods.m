@@ -13,6 +13,8 @@
 #import "SCDaemon.h"
 #import "LaunchctlHelper.h"
 #import "HostFileBlockerSet.h"
+#import "SCBlockClock.h"
+#import <math.h>
 
 NSTimeInterval METHOD_LOCK_TIMEOUT = 5.0;
 NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for checkups, because we'd prefer not to have tons pile up
@@ -80,7 +82,18 @@ NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for che
         [LaunchctlHelper unloadLaunchdJobWithPlistAt: @"/Library/LaunchDaemons/org.eyebeam.SelfControl.plist"];
     }
 
+    NSTimeInterval duration = [endDate timeIntervalSinceNow];
+    NSDictionary* clockState = [SCBlockClock stateForDuration:duration
+                                                         at:[SCBlockClock continuousSeconds]
+                                                bootSession:[SCBlockClock bootSessionIdentifier]];
+    if (duration <= 0 || clockState == nil || (blocklist.count == 0 && !isAllowlist)) {
+        reply([SCErr errorWithCode:302]);
+        [self.daemonMethodLock unlock];
+        return;
+    }
     SCSettings* settings = [SCSettings sharedSettings];
+    [settings setValue:clockState forKey:@"BlockClockState"];
+    [settings setValue:@YES forKey:@"BlockUsesContinuousClock"];
     // update SCSettings with the blocklist and end date that've been requested
     [settings setValue: blocklist forKey: @"ActiveBlocklist"];
     [settings setValue: @(isAllowlist) forKey: @"ActiveBlockAsWhitelist"];
@@ -167,7 +180,10 @@ NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for che
     }
     
     NSArray* activeBlocklist = [settings valueForKey: @"ActiveBlocklist"];
-    NSMutableArray* added = [NSMutableArray arrayWithArray: newBlocklist];
+    NSMutableOrderedSet* preserved = [NSMutableOrderedSet orderedSetWithArray:activeBlocklist];
+    [preserved addObjectsFromArray:newBlocklist];
+    NSArray* effectiveBlocklist = preserved.array;
+    NSMutableArray* added = [NSMutableArray arrayWithArray: effectiveBlocklist];
     [added removeObjectsInArray: activeBlocklist];
     NSMutableArray* removed = [NSMutableArray arrayWithArray: activeBlocklist];
     [removed removeObjectsInArray: newBlocklist];
@@ -178,14 +194,14 @@ NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for che
     }
     
     BlockManager* blockManager = [[BlockManager alloc] initAsAllowlist: [settings boolForKey: @"ActiveBlockAsWhitelist"]
-                                                            allowLocal: [settings boolForKey: @"EvaluateCommonSubdomains"]
-                                               includeCommonSubdomains: [settings boolForKey: @"AllowLocalNetworks"]
+                                                            allowLocal: [settings boolForKey: @"AllowLocalNetworks"]
+                                               includeCommonSubdomains: [settings boolForKey: @"EvaluateCommonSubdomains"]
                                                   includeLinkedDomains: [settings boolForKey: @"IncludeLinkedDomains"]];
     [blockManager enterAppendMode];
     [blockManager addBlockEntriesFromStrings: added];
     [blockManager finishAppending];
     
-    [settings setValue: newBlocklist forKey: @"ActiveBlocklist"];
+    [settings setValue: effectiveBlocklist forKey: @"ActiveBlocklist"];
     
     // make sure everyone knows about our new list
     NSError* syncErr = [settings syncSettingsAndWait: 5];
@@ -235,24 +251,37 @@ NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for che
     SCSettings* settings = [SCSettings sharedSettings];
     
     // this can only be used to *extend* the block end date - not shorten it!
-    // and we also won't let them extend by more than 24 hours at a time, for safety...
-    // TODO: they should be able to extend up to MaxBlockLength minutes, right?
+    // Match the day slider: no more than 30 days per extension.
     NSDate* currentEndDate = [settings valueForKey: @"BlockEndDate"];
-    if ([newEndDate timeIntervalSinceDate: currentEndDate] < 0) {
+    NSTimeInterval extension = [newEndDate timeIntervalSinceDate:currentEndDate];
+    if (!isfinite(extension) || extension < 0) {
         NSLog(@"ERROR: Can't update block end date to an earlier date");
         NSError* err = [SCErr errorWithCode: 308];
         [SCSentry captureError: err];
         reply(err);
         [self.daemonMethodLock unlock];
+        return;
     }
-    if ([newEndDate timeIntervalSinceDate: currentEndDate] > 86400) { // 86400 seconds = 1 day
-        NSLog(@"ERROR: Can't extend block end date by more than 1 day at a time");
+    if (extension > 30 * 86400) { // 30 days
+        NSLog(@"ERROR: Can't extend block end date by more than 30 days at a time");
         NSError* err = [SCErr errorWithCode: 309];
         [SCSentry captureError: err];
         reply(err);
         [self.daemonMethodLock unlock];
+        return;
     }
-    
+
+    if ([settings boolForKey:@"BlockUsesContinuousClock"]) {
+        NSDictionary* state = [SCBlockClock extendState:[settings valueForKey:@"BlockClockState"]
+                                                    by:extension at:[SCBlockClock continuousSeconds]
+                                           bootSession:[SCBlockClock bootSessionIdentifier]];
+        if (state == nil) {
+            reply([SCErr errorWithCode:308]);
+            [self.daemonMethodLock unlock];
+            return;
+        }
+        [settings setValue:state forKey:@"BlockClockState"];
+    }
     [settings setValue: newEndDate forKey: @"BlockEndDate"];
     
     // make sure everyone knows about our new end date
@@ -280,9 +309,13 @@ NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for che
     [SCSentry addBreadcrumb: @"Daemon method checkupBlock called" category: @"daemon"];
 
     NSTimeInterval integrityCheckIntervalSecs = 15.0;
-    static NSDate* lastBlockIntegrityCheck;
-    if (lastBlockIntegrityCheck == nil) {
-        lastBlockIntegrityCheck = [NSDate distantPast];
+    static NSTimeInterval lastBlockIntegrityCheck = -1;
+    NSTimeInterval now = [SCBlockClock continuousSeconds];
+    BOOL maintenanceDue = lastBlockIntegrityCheck < 0 || now - lastBlockIntegrityCheck >= integrityCheckIntervalSecs;
+    if (maintenanceDue && [SCBlockUtilities modernBlockIsRunning]) {
+        // Save progress every 15 seconds and immediately on daemon startup.
+        // A crash can lose unsaved credit, but cannot expire a block early.
+        [SCBlockUtilities checkpointBlockClock];
     }
 
     BOOL shouldRunIntegrityCheck = NO;
@@ -321,8 +354,8 @@ NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for che
 
         // once the checkups stop, the daemon will clear itself in a while due to inactivity
         [[SCDaemon sharedDaemon] stopCheckupTimer];
-    } else if ([[NSDate date] timeIntervalSinceDate: lastBlockIntegrityCheck] > integrityCheckIntervalSecs) {
-        lastBlockIntegrityCheck = [NSDate date];
+    } else if (maintenanceDue) {
+        lastBlockIntegrityCheck = now;
         // The block is still on.  Every once in a while, we should
         // check if anybody removed our rules, and if so
         // re-add them.
@@ -349,7 +382,7 @@ NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for che
     SCSettings* settings = [SCSettings sharedSettings];
     PacketFilter* pf = [[PacketFilter alloc] init];
     HostFileBlockerSet* hostFileBlockerSet = [[HostFileBlockerSet alloc] init];
-    if(![pf containsSelfControlBlock] || (![settings boolForKey: @"ActiveBlockAsWhitelist"] && ![hostFileBlockerSet.defaultBlocker containsSelfControlBlock])) {
+    if(![pf containsSelfControlBlock] || ![pf selfControlRulesAreActive] || (![settings boolForKey: @"ActiveBlockAsWhitelist"] && ![hostFileBlockerSet.defaultBlocker containsSelfControlBlock])) {
         NSLog(@"INFO: Block is missing in PF or hosts, re-adding...");
         // The firewall is missing at least the block header.  Let's clear everything
         // before we re-add to make sure everything goes smoothly.
@@ -381,6 +414,17 @@ NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for che
         [SCSentry addBreadcrumb: @"Daemon found compromised block integrity and re-added rules" category: @"daemon"];
         NSLog(@"INFO: Integrity check ran; readded block rules.");
     } else NSLog(@"INFO: Integrity check ran; no action needed.");
+
+    // Report what is actually loaded, not merely the existence of config files.
+    // Re-read hosts from disk because repair used a separate BlockManager.
+    HostFileBlockerSet *currentHosts = [HostFileBlockerSet new];
+    BOOL healthy = [pf selfControlRulesAreActive] &&
+        ([settings boolForKey:@"ActiveBlockAsWhitelist"] || [currentHosts.defaultBlocker containsSelfControlBlock]);
+    [settings setValue:@{@"RulesPresent": @(healthy),
+                        @"CheckedAt": @([SCBlockClock continuousSeconds]),
+                        @"BootSession": [SCBlockClock bootSessionIdentifier] ?: @""}
+                forKey:@"ProtectionStatus"];
+    [settings synchronizeSettings];
     
     [self.daemonMethodLock unlock];
 }

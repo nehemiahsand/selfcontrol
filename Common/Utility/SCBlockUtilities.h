@@ -17,6 +17,9 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)legacyBlockIsRunning;
 
 + (BOOL)currentBlockIsExpired;
++ (NSTimeInterval)currentBlockRemainingSeconds;
++ (void)checkpointBlockClock;
++ (BOOL)currentProtectionIsHealthy;
 
 + (BOOL)blockRulesFoundOnSystem;
 

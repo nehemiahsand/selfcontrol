@@ -82,6 +82,7 @@
 
 - (IBAction)importCommonDistractingWebsites:(id)sender;
 - (IBAction)importNewsAndPublications:(id)sender;
+- (IBAction)importSiteBundle:(NSMenuItem *)sender;
 
 // Called when the button-menu item is clicked to import all incoming mail
 // servers from Thunderbird.  Adds to the domain list array all incoming mail

@@ -24,10 +24,13 @@
 
 #import "TimerWindowController.h"
 #import "SCUIUtilities.h"
+#import <math.h>
+#import <limits.h>
 
 @interface TimerWindowController ()
 
 @property(nonatomic, readonly) AppController* appController;
+@property(nonatomic, strong) NSTextField *protectionStatusLabel;
 
 @end
 
@@ -50,6 +53,24 @@
 - (void)awakeFromNib {
 	[[self window] center];
 	[[self window] makeKeyAndOrderFront: self];
+
+    timerLabel_.toolTip = NSLocalizedString(@"Changing Date & Time does not shorten new blocks. After a restart, the saved remaining time resumes; time powered off does not count.", @"Elapsed-time timer behavior");
+
+    self.protectionStatusLabel = [NSTextField new];
+    self.protectionStatusLabel.editable = NO;
+    self.protectionStatusLabel.selectable = NO;
+    self.protectionStatusLabel.bezeled = NO;
+    self.protectionStatusLabel.drawsBackground = NO;
+    self.protectionStatusLabel.alignment = NSTextAlignmentCenter;
+    self.protectionStatusLabel.font = [NSFont systemFontOfSize:10];
+    self.protectionStatusLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.protectionStatusLabel.toolTip = NSLocalizedString(@"Reports recent firewall and hosts checks. VPNs, proxies, cached content, and every browser route are not verified.", @"Protection status scope");
+    [timerLabel_.superview addSubview:self.protectionStatusLabel];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.protectionStatusLabel.topAnchor constraintEqualToAnchor:timerLabel_.bottomAnchor constant:1],
+        [self.protectionStatusLabel.centerXAnchor constraintEqualToAnchor:timerLabel_.centerXAnchor],
+        [self.protectionStatusLabel.widthAnchor constraintEqualToAnchor:timerLabel_.widthAnchor]
+    ]];
 
 	NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
 
@@ -78,7 +99,15 @@
     legacyBlockWarningLabel_.hidden = YES;
 
     // set up extend block dialog
-    extendDurationSlider_.maxDuration = [defaults integerForKey: @"MaxBlockLength"];
+    extendDurationSlider_.usesDays = YES;
+    extendDurationSlider_.maxDuration = 43200;
+    extendDurationSlider_.integerValue = 1;
+    extendDurationSlider_.accessibilityLabel = @"Days to add to the block";
+    [self updateExtendSliderDisplay:nil];
+    window.titlebarAppearsTransparent = YES;
+    window.backgroundColor = NSColor.windowBackgroundColor;
+    timerLabel_.font = [NSFont monospacedDigitSystemFontOfSize:42 weight:NSFontWeightMedium];
+    self.protectionStatusLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
 
     if ([SCBlockUtilities modernBlockIsRunning]) {
         blockEndingDate_ = [settings_ valueForKey: @"BlockEndDate"];
@@ -148,13 +177,28 @@
                                       waitUntilDone:NO];
 
     NSString* finishingString = NSLocalizedString(@"Finishing", @"String shown when waiting for finished block to clear");
-	int numSeconds = (int) [blockEndingDate_ timeIntervalSinceNow];
+    BOOL healthy = [SCBlockUtilities currentProtectionIsHealthy];
+    self.protectionStatusLabel.stringValue = healthy ? NSLocalizedString(@"Block active", @"Healthy protection status")
+        : NSLocalizedString(@"Protection needs attention", @"Unverified protection status");
+    self.protectionStatusLabel.textColor = healthy ? NSColor.secondaryLabelColor : NSColor.systemRedColor;
+	NSTimeInterval remaining = [SCBlockUtilities modernBlockIsRunning]
+        ? [SCBlockUtilities currentBlockRemainingSeconds] : [blockEndingDate_ timeIntervalSinceNow];
+    if (!isfinite(remaining)) {
+        timerLabel_.stringValue = NSLocalizedString(@"Timer unavailable — block remains active", @"Invalid elapsed-time state");
+        [timerLabel_ sizeToFit];
+        killBlockButton_.hidden = YES;
+        [[NSApp dockTile] setBadgeLabel:nil];
+        [self resetStrikes];
+        return;
+    }
+    // Round upward: less than one second remaining is not an expired block.
+    int numSeconds = (int)MAX(0, MIN(INT_MAX, ceil(remaining)));
 	int numHours;
 	int numMinutes;
 
     // if we're already showing "Finishing", but the block timer isn't clearing,
     // keep track of that, so we can take drastic measures if necessary.
-	if(numSeconds < 0 && [timerLabel_.stringValue isEqualToString: finishingString]) {
+	if(remaining <= 0 && [timerLabel_.stringValue isEqualToString: finishingString]) {
 		[[NSApp dockTile] setBadgeLabel: nil];
 
 		// This increments the strike counter.  After four strikes of the timer being
@@ -179,6 +223,7 @@
 		return;
 	}
 
+    killBlockButton_.hidden = YES;
 	numHours = (numSeconds / 3600);
 	numSeconds %= 3600;
 	numMinutes = (numSeconds / 60);
@@ -206,7 +251,7 @@
 	[timerLabel_ setFrame:NSRectFromCGRect(CGRectMake(0, timerLabel_.frame.origin.y, self.window.frame.size.width, timerLabel_.frame.size.height))];
 	[self resetStrikes];
     
-	if([[NSUserDefaults standardUserDefaults] boolForKey: @"BadgeApplicationIcon"] && [blockEndingDate_ timeIntervalSinceNow] > 0) {
+	if([[NSUserDefaults standardUserDefaults] boolForKey: @"BadgeApplicationIcon"] && remaining > 0) {
 		// We want to round up the minutes--standard when we aren't displaying seconds.
 		if(numSeconds > 0 && numMinutes != 59) {
 			numMinutes++;
@@ -258,6 +303,7 @@
         return;
     }
     
+    [self updateExtendSliderDisplay:nil];
     [self.window beginSheet: extendBlockTimeSheet_ completionHandler:^(NSModalResponse returnCode) {
         [self->extendBlockTimeSheet_ orderOut: self];
     }];
@@ -269,7 +315,7 @@
     // chop it down to our max display value so the user doesn't
     // accidentally extend the block much longer than intended
     if (extendDurationSlider_.durationValueMinutes > extendDurationSlider_.maxDuration) {
-        extendDurationSlider_.integerValue = extendDurationSlider_.maxDuration;
+        extendDurationSlider_.integerValue = extendDurationSlider_.maxDuration / 1440;
     }
 
     extendDurationLabel_.stringValue = extendDurationSlider_.durationDescription;

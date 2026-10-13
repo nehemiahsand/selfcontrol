@@ -18,6 +18,28 @@
                 <menuItem id="85">
                     <modifierMask key="keyEquivalentModifierMask"/>
                 </menuItem>
+                <menuItem title="Site Bundles" id="bundle-menu-item">
+                    <modifierMask key="keyEquivalentModifierMask"/>
+                    <menu key="submenu" title="Site Bundles" id="bundle-menu">
+                        <items>
+                            <menuItem title="YouTube" id="bundle-youtube">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <string key="representedObject">YouTube</string>
+                                <connections><action selector="importSiteBundle:" target="48" id="bundle-youtube-action"/></connections>
+                            </menuItem>
+                            <menuItem title="Reddit" id="bundle-reddit">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <string key="representedObject">Reddit</string>
+                                <connections><action selector="importSiteBundle:" target="48" id="bundle-reddit-action"/></connections>
+                            </menuItem>
+                            <menuItem title="Instagram" id="bundle-instagram">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <string key="representedObject">Instagram</string>
+                                <connections><action selector="importSiteBundle:" target="48" id="bundle-instagram-action"/></connections>
+                            </menuItem>
+                        </items>
+                    </menu>
+                </menuItem>
                 <menuItem title="Common Distracting Sites" id="141">
                     <modifierMask key="keyEquivalentModifierMask"/>
                     <connections>

@@ -7,6 +7,7 @@
 //
 
 #import "PacketFilter.h"
+#import "SCProtectionStatus.h"
 
 NSString* const kPfctlExecutablePath = @"/sbin/pfctl";
 NSString* const kPFConfPath = @"/etc/pf.conf";
@@ -259,6 +260,30 @@ NSFileHandle* appendFileHandle;
 	[pfConf writeToFile: @"/etc/pf.conf" atomically: true encoding: NSUTF8StringEncoding error: nil];
 }
 
+- (NSString *)readPFStatusWithArguments:(NSArray<NSString *> *)arguments {
+    NSTask *task = [NSTask new];
+    task.launchPath = kPfctlExecutablePath;
+    task.arguments = arguments;
+    task.environment = @{@"LC_ALL": @"C"};
+    NSPipe *pipe = [NSPipe pipe];
+    task.standardOutput = pipe;
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    @try {
+        [task launch];
+        NSData *data = [pipe.fileHandleForReading readDataToEndOfFile];
+        [task waitUntilExit];
+        return task.terminationStatus == 0 ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+    } @catch (NSException *exception) {
+        return nil;
+    }
+}
+- (BOOL)selfControlRulesAreActive {
+    NSString *info = [self readPFStatusWithArguments:@[@"-s", @"info"]];
+    NSString *rootRules = [self readPFStatusWithArguments:@[@"-s", @"rules"]];
+    NSString *anchorRules = [self readPFStatusWithArguments:@[@"-a", @"org.eyebeam", @"-s", @"rules"]];
+    if (info == nil || rootRules == nil || anchorRules == nil) return NO;
+    return [SCProtectionStatus packetFilterIsEnabled:info rootRules:rootRules anchorRules:anchorRules];
+}
 - (BOOL)containsSelfControlBlock {
 	NSString* mainConf = [NSString stringWithContentsOfFile: @"/etc/pf.conf" encoding: NSUTF8StringEncoding error: nil];
 	return mainConf != nil && [mainConf rangeOfString: @"org.eyebeam"].location != NSNotFound;

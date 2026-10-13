@@ -7,7 +7,22 @@
 
 #import "SCDurationSlider.h"
 #import "SCTimeIntervalFormatter.h"
-#import <TransformerKit/NSValueTransformer+TransformerKit.h>
+// Storage remains in minutes so existing blocks and CLI clients keep their units.
+@interface SCDurationValueTransformer : NSValueTransformer
+@property BOOL usesDays;
+@end
+@implementation SCDurationValueTransformer
++ (Class)transformedValueClass { return NSNumber.class; }
++ (BOOL)allowsReverseTransformation { return YES; }
+- (id)transformedValue:(id)value {
+    double minutes = [value respondsToSelector:@selector(doubleValue)] ? [value doubleValue] : 0;
+    return @(self.usesDays ? minutes / 1440.0 : minutes);
+}
+- (id)reverseTransformedValue:(id)value {
+    double number = [value respondsToSelector:@selector(doubleValue)] ? [value doubleValue] : 0;
+    return @(lround(number) * (self.usesDays ? 1440 : 1));
+}
+@end
 
 #define kValueTransformerName @"BlockDurationSliderTransformer"
 
@@ -40,39 +55,45 @@
     [self registerMinutesValueTransformer];
 }
 
+- (void)setUsesDays:(BOOL)usesDays {
+    _usesDays = usesDays;
+    [self setMaxDuration:_maxDuration];
+}
+
 - (void)setMaxDuration:(NSInteger)maxDuration {
-    _maxDuration = maxDuration;
-    [self setMinValue: 1]; // never start a block shorter than 1 minute
-    [self setMaxValue: self.maxDuration];
+    _maxDuration = MAX(self.usesDays ? 1440 : 1, maxDuration);
+    self.minValue = 1;
+    self.maxValue = self.usesDays ? MAX(1, _maxDuration / 1440) : _maxDuration;
+    self.numberOfTickMarks = self.usesDays ? (NSInteger)self.maxValue : 0;
+    self.allowsTickMarkValuesOnly = self.usesDays;
 }
 
 - (void)registerMinutesValueTransformer {
-    [NSValueTransformer registerValueTransformerWithName: kValueTransformerName
-                                   transformedValueClass: [NSNumber class]
-                      returningTransformedValueWithBlock:^id _Nonnull(id  _Nonnull value) {
-        // if it's not a number or convertable to one, IDK man
-        if (![value respondsToSelector: @selector(floatValue)]) return @0;
-        
-        long minutesValue = lroundf([value floatValue]);
-        return @(minutesValue);
-    }];
+    SCDurationValueTransformer *transformer = [SCDurationValueTransformer new];
+    [NSValueTransformer setValueTransformer:transformer forName:kValueTransformerName];
 }
 
 - (NSInteger)durationValueMinutes {
-    return lroundf(self.floatValue);
+    return lround(self.doubleValue) * (self.usesDays ? 1440 : 1);
 }
 
 - (void)bindDurationToObject:(id)obj keyPath:(NSString*)keyPath {
+    SCDurationValueTransformer *transformer = [SCDurationValueTransformer new];
+    transformer.usesDays = self.usesDays;
     [self bind: @"value"
       toObject: obj
    withKeyPath: keyPath
        options: @{
                   NSContinuouslyUpdatesValueBindingOption: @YES,
-                  NSValueTransformerNameBindingOption: kValueTransformerName
+                  NSValueTransformerBindingOption: transformer
                   }];
 }
 
 - (NSString*)durationDescription {
+    if (self.usesDays) {
+        NSInteger days = self.durationValueMinutes / 1440;
+        return [NSString stringWithFormat:days == 1 ? NSLocalizedString(@"%ld day", nil) : NSLocalizedString(@"%ld days", nil), (long)days];
+    }
     return [SCDurationSlider timeSliderDisplayStringFromNumberOfMinutes: self.durationValueMinutes];
 }
 

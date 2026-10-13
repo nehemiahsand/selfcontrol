@@ -23,6 +23,7 @@
 
 #import "DomainListWindowController.h"
 #import "AppController.h"
+#import "SCSiteBundles.h"
 
 @implementation DomainListWindowController
 
@@ -43,6 +44,9 @@
 	return self;
 }
 - (void)awakeFromNib  {
+    self.window.titlebarAppearsTransparent = YES;
+    domainListTableView_.rowHeight = 30;
+    domainListTableView_.usesAlternatingRowBackgroundColors = YES;
     NSInteger indexToSelect = [defaults_ boolForKey: @"BlockAsWhitelist"] ? 1 : 0;
     [allowlistRadioMatrix_ selectCellAtRow: indexToSelect column: 0];
     [self updateWindowTitle];
@@ -294,6 +298,7 @@
 }
 
 - (void)addHostArray:(NSArray*)arr {
+    if (self.readOnly) return;
 	for(NSUInteger i = 0; i < [arr count]; i++) {
 		// Check for dupes
 		if(![domainList_ containsObject: arr[i]])
@@ -310,6 +315,22 @@
 }
 - (IBAction)importNewsAndPublications:(id)sender {
 	[self addHostArray: [HostImporter newsAndPublications]];
+}
+- (IBAction)importSiteBundle:(NSMenuItem *)sender {
+    if (self.readOnly || [defaults_ boolForKey:@"BlockAsWhitelist"]) return;
+    NSArray *domains = [SCSiteBundles domainsForName:sender.representedObject];
+    if (domains.count == 0) return;
+    [self refreshDomainList];
+    NSAlert *preview = [NSAlert new];
+    preview.messageText = [NSString stringWithFormat:NSLocalizedString(@"Add %@ to your blocklist?", @"Site bundle preview"), sender.representedObject];
+    preview.informativeText = [NSString stringWithFormat:NSLocalizedString(@"These domains will be added:\n\n%@\n\nRelated domains may also affect embedded content on other sites.", @"Site bundle domain preview"), [domains componentsJoinedByString:@"\n"]];
+    [preview addButtonWithTitle:NSLocalizedString(@"Add Domains", @"Confirm site bundle")];
+    [preview addButtonWithTitle:NSLocalizedString(@"Cancel", @"Cancel site bundle")];
+    if ([preview runModal] == NSAlertFirstButtonReturn) [self addHostArray:domains];
+}
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action == @selector(importSiteBundle:)) return !self.readOnly && ![defaults_ boolForKey:@"BlockAsWhitelist"];
+    return !self.readOnly;
 }
 - (IBAction)importIncomingMailServersFromThunderbird:(id)sender {
 	[self addHostArray: [HostImporter incomingMailHostnamesFromThunderbird]];

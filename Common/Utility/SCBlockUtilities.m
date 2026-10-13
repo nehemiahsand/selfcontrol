@@ -8,6 +8,9 @@
 #import "SCBlockUtilities.h"
 #import "HostFileBlocker.h"
 #import "PacketFilter.h"
+#import "SCBlockClock.h"
+#import "SCProtectionStatus.h"
+#import <math.h>
 
 @implementation SCBlockUtilities
 
@@ -50,25 +53,52 @@
     return NO;
 }
 
-// returns YES if the block should have expired active based on the specified end time (i.e. the end time is in the past), or NO otherwise
 + (BOOL)currentBlockIsExpired {
-    // the block should be running if the end date hasn't arrived yet
+    return [self currentBlockRemainingSeconds] <= 0;
+}
+
++ (NSTimeInterval)currentBlockRemainingSeconds {
     SCSettings* settings = [SCSettings sharedSettings];
-    if ([[settings valueForKey: @"BlockEndDate"] timeIntervalSinceNow] > 0) {
-        return NO;
-    } else {
-        return YES;
+    if ([settings boolForKey:@"BlockUsesContinuousClock"]) {
+        return [SCBlockClock remainingWithState:[settings valueForKey:@"BlockClockState"]
+                                            at:[SCBlockClock continuousSeconds]
+                                   bootSession:[SCBlockClock bootSessionIdentifier]];
+    }
+    // Blocks started by older releases have no elapsed-time anchor. Do not
+    // invent one from a possibly already modified clock during an upgrade.
+    return [[settings valueForKey:@"BlockEndDate"] timeIntervalSinceNow];
+}
+
++ (void)checkpointBlockClock {
+    SCSettings* settings = [SCSettings sharedSettings];
+    if (settings.readOnly || ![settings boolForKey:@"BlockUsesContinuousClock"]) return;
+    NSDictionary* state = [SCBlockClock checkpointState:[settings valueForKey:@"BlockClockState"]
+                                                   at:[SCBlockClock continuousSeconds]
+                                          bootSession:[SCBlockClock bootSessionIdentifier]];
+    if (state != nil) {
+        [settings setValue:state forKey:@"BlockClockState"];
+        [settings synchronizeSettings];
     }
 }
 
 + (BOOL)blockRulesFoundOnSystem {
     return [PacketFilter blockFoundInPF] || [HostFileBlocker blockFoundInHostsFile];
 }
++ (BOOL)currentProtectionIsHealthy {
+    SCSettings *settings = [SCSettings sharedSettings];
+    return [self modernBlockIsRunning] && isfinite([self currentBlockRemainingSeconds]) &&
+        [SCProtectionStatus recordIsHealthy:[settings valueForKey:@"ProtectionStatus"]
+                                        at:[SCBlockClock continuousSeconds]
+                               bootSession:[SCBlockClock bootSessionIdentifier]];
+}
 
 + (void) removeBlockFromSettings {
     SCSettings* settings = [SCSettings sharedSettings];
     [settings setValue: @NO forKey: @"BlockIsRunning"];
     [settings setValue: nil forKey: @"BlockEndDate"];
+    [settings setValue:@NO forKey:@"BlockUsesContinuousClock"];
+    [settings setValue:nil forKey:@"BlockClockState"];
+    [settings setValue:nil forKey:@"ProtectionStatus"];
     [settings setValue: nil forKey: @"ActiveBlocklist"];
     [settings setValue: nil forKey: @"ActiveBlockAsWhitelist"];
 }

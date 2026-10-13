@@ -27,6 +27,10 @@ profile
 Podfile.lock
 Pods/
 
+# Generated Python bytecode
+__pycache__/
+*.py[cod]
+
 xcuserdata/**/*
 !xcuserdata/**/xcschemes/*
 
